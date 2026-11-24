@@ -182,14 +182,29 @@ def test_agenda_packet(parsed_items):
     }
 
 
-def test_cancelled_meeting_without_time(parsed_items):
-    """The source shows "Canceled" instead of a time, so the meeting gets
-    midnight and a time note rather than a guessed time."""
+def test_cancelled_meeting_gets_usual_time(parsed_items):
+    """The source shows "Canceled" instead of a time, so the meeting keeps the
+    board's usual 10:00 AM start, which keeps its id unchanged downstream."""
     item = parsed_items[0]
-    assert item["start"] == datetime(2026, 6, 25, 0, 0)
-    assert item["time_notes"] == (
+    assert item["start"] == datetime(2026, 6, 25, 10, 0)
+    assert item["status"] == CANCELLED
+    assert item["time_notes"] == ""
+
+
+def test_cancelled_meeting_without_usual_time(caplog):
+    """A cancelled meeting whose title has no usual time keeps midnight, a
+    warning and a time note."""
+    spider = LoscaMetroTransitSpider()
+    location = HQ + ", \r\n3rd Floor, Metro Board Room"
+    row = event("Gateway Cities Service Council", time="Canceled", location=location)
+    with caplog.at_level(logging.WARNING), freeze_time("2026-03-05"):
+        meeting = spider._parse_meeting(row, "Gateway Cities Service Council", {})
+    assert meeting["start"] == datetime(2026, 3, 4, 0, 0)
+    assert meeting["status"] == CANCELLED
+    assert meeting["time_notes"] == (
         "Please check the meeting attachment for start time details."
     )
+    assert "No start time for 'Gateway Cities Service Council'" in caplog.text
 
 
 def test_hybrid_location(parsed_items):
@@ -351,7 +366,6 @@ def variant_items():
         event("South Bay Service Council", time="5:00 PM", meeting_id=20),
         event("South Bay Service Council", time="5:00 PM", meeting_id=21),
         event("Construction Committee (SAP)", meeting_id=11, Audio=sap_audio),
-        event("Executive Management Committee", time="", meeting_id=30),
         event(
             "Planning and Programming Committee",
             meeting_id=40,
@@ -378,7 +392,6 @@ def test_variant_count(variant_items):
     assert [i["title"] for i in variant_items] == [
         "Construction Committee",
         "South Bay Service Council",
-        "Executive Management Committee",
         "Planning and Programming Committee",
     ]
 
@@ -394,13 +407,17 @@ def test_duplicate_keeps_newer_posting(variant_items):
     assert variant_items[1]["source"].endswith("ID=21")
 
 
-def test_blank_time_keeps_meeting(variant_items):
-    assert variant_items[2]["start"] == datetime(2026, 3, 4, 0, 0)
-    assert variant_items[2]["time_notes"]
+def test_blank_time_row_is_skipped(caplog):
+    """Rows with a blank time are empty placeholders (no location or agenda),
+    which the original spider never output; they are skipped with a warning."""
+    row = event("San Fernando Valley Service Council", date="7/31/2020", time="")
+    with caplog.at_level(logging.WARNING), freeze_time("2026-03-05"):
+        assert list(LoscaMetroTransitSpider().parse_legistar([row])) == []
+    assert "no meeting time" in caplog.text
 
 
 def test_accessible_agenda_when_no_agenda(variant_items):
-    assert variant_items[3]["links"][0] == {
+    assert variant_items[2]["links"][0] == {
         "href": "https://metro.legistar.com/View.ashx?M=AADA&ID=40",
         "title": "Accessible Agenda",
     }
@@ -417,7 +434,7 @@ def test_accessible_agenda_when_no_agenda(variant_items):
         ),
         (
             "",
-            "",
+            "Canceled",
             "Please check the meeting attachment for start time and location "
             "details.",
         ),
@@ -473,13 +490,14 @@ def test_empty_year_logs_warning(caplog):
     assert "No Legistar events found" in caplog.text
 
 
-def test_unparsable_time_keeps_date(caplog):
+def test_unparsable_time_uses_usual_time():
+    """A typo like "13:00 PM" falls back to the date, then to the committee's
+    usual time, as in the original spider."""
     spider = LoscaMetroTransitSpider()
     row = event("Construction Committee", time="13:00 PM", location=HQ)
-    with caplog.at_level(logging.WARNING), freeze_time("2026-03-05"):
+    with freeze_time("2026-03-05"):
         meeting = spider._parse_meeting(row, "Construction Committee", {})
-    assert meeting["start"] == datetime(2026, 3, 4, 0, 0)
-    assert "Unparsable time '13:00 PM'" in caplog.text
+    assert meeting["start"] == datetime(2026, 3, 4, 13, 0)
 
 
 def test_missing_events_table_logs_warning(caplog):

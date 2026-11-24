@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import time
 
 import scrapy
 from city_scrapers_core.constants import (
@@ -72,7 +72,19 @@ class LoscaMetroTransitSpider(LegistarSpider):
     committee_re = re.compile(r"\bcommittee\b", re.IGNORECASE)
     board_re = re.compile(r"\bboard\b", re.IGNORECASE)
     legistar_id_re = re.compile(r"[?&]ID=(\d+)")
-    time_re = re.compile(r"^\d{1,2}:\d{2}\s*[AP]M$", re.IGNORECASE)
+
+    # Cancelled meetings have "Canceled" instead of a time, so they get the
+    # committee's usual start time. Kept as in the original spider because
+    # changing these times changes meeting ids already published downstream.
+    agencies_start_time = {
+        "Board of Directors - Regular Board Meeting": time(10, 0),
+        "Operations, Safety, and Customer Experience Committee": time(13, 0),
+        "Executive Management Committee": time(11, 0),
+        "Finance, Budget and Audit Committee": time(10, 0),
+        "Planning and Programming Committee": time(11, 0),
+        "Ad Hoc Board Composition Committee": time(13, 0),
+        "Construction Committee": time(13, 0),
+    }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -182,23 +194,30 @@ class LoscaMetroTransitSpider(LegistarSpider):
         yield from meetings.values()
 
     def _parse_start(self, event, title):
-        """Date and time, or the date at midnight when the time column is
-        blank or a status like "Canceled"."""
-        date = (event.get("Meeting Date") or "").strip()
-        time = (event.get("Meeting Time") or "").strip()
+        """The original spider's start parsing: Legistar's date and time, or
+        the date alone when the time is a status like "Canceled", with the
+        committee's usual time filled in for those."""
         try:
-            day = datetime.strptime(date, "%m/%d/%Y")
+            start = self.legistar_start(event)
         except ValueError:
-            self.logger.warning("Skipping %r: unparsable date %r", title, date)
+            self.logger.warning(
+                "Skipping %r: unparsable date %r", title, event.get("Meeting Date")
+            )
             return None
-        if not self.time_re.match(time):
-            return day
-        try:
-            return datetime.strptime(f"{date} {time}", "%m/%d/%Y %I:%M %p")
-        except ValueError:
-            # e.g. "13:00 PM": keep the date, the time note covers the rest
-            self.logger.warning("Unparsable time %r for %r on %s", time, title, date)
-            return day
+        if start is None:
+            # Rows with a blank time are empty placeholders (no location or
+            # agenda either), which the original spider never output
+            self.logger.warning(
+                "Skipping %r on %s: no meeting time",
+                title,
+                event.get("Meeting Date"),
+            )
+            return None
+        if start.hour == 0 and start.minute == 0:
+            usual = self.agencies_start_time.get(title)
+            if usual:
+                start = start.replace(hour=usual.hour, minute=usual.minute)
+        return start
 
     def _parse_meeting(self, event, title, spanish_audio):
         start = self._parse_start(event, title)
