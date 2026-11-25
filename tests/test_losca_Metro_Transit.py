@@ -343,8 +343,35 @@ def test_virtual_location(raw):
     assert location_of(raw)[0] == {"name": "Virtual", "address": ""}
 
 
-@pytest.mark.parametrize("raw", ["", "Hybrid in-person/virtual meeting"])
+@pytest.mark.parametrize(
+    "raw,description",
+    [
+        (
+            "Online Virtual Meeting https://zoom.us/j/123456789",
+            "https://zoom.us/j/123456789",
+        ),
+        (
+            "Zoom Webinar ID: 868 0072 4592, Passcode: 764206",
+            "Zoom Webinar ID: 868 0072 4592, Passcode: 764206",
+        ),
+    ],
+)
+def test_virtual_location_keeps_access_details(raw, description):
+    """Neither shape is in the live data yet: a meeting link or a Zoom ID with
+    no place is a virtual meeting, and the link or ID goes to the description."""
+    assert location_of(raw) == ({"name": "Virtual", "address": ""}, description)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "Hybrid in-person/virtual meeting",
+        "Zoom Webinar ID:868 0072 4592 Hybrid in-person/virtual meeting",
+    ],
+)
 def test_missing_location(raw):
+    """A hybrid meeting without an address stays TBD, even with a Zoom ID."""
     assert location_of(raw)[0] == {"name": "TBD", "address": ""}
 
 

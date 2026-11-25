@@ -52,6 +52,8 @@ class LoscaMetroTransitSpider(LegistarSpider):
         r"(?:,?\s*(?:Passcode|Pa\w*cipant\s+(?:ID|Code))\s*:?\s*\d+#?)?",
         re.IGNORECASE,
     )
+    # A meeting link written in the location itself, e.g. a Zoom join URL
+    url_re = re.compile(r"https?://\S+", re.IGNORECASE)
     street_re = re.compile(r"^(?:\d{1,5}|One)\s+[A-Za-z]")
     # A room written after the street in the same part, e.g.
     # "1 Gateway Plaza 3rd Floor Gateway Conference Room"
@@ -432,7 +434,11 @@ class LoscaMetroTransitSpider(LegistarSpider):
         match = self.details_re.search(raw)
         if match:
             raw, details = raw[: match.start()], raw[match.start() :]
-        notes = [m.group(0) for m in self.zoom_re.finditer(raw)]
+        # Meeting links and Zoom IDs are access details: keep them in the
+        # description so a virtual meeting doesn't lose its joining link
+        notes = [m.group(0) for m in self.url_re.finditer(raw)]
+        raw = self.url_re.sub(" ", raw)
+        notes += [m.group(0) for m in self.zoom_re.finditer(raw)]
         raw = self.zoom_re.sub(" ", raw)
         hybrid = self.hybrid_re.search(raw)
         if hybrid:
@@ -444,9 +450,10 @@ class LoscaMetroTransitSpider(LegistarSpider):
         if self.virtual_re.match(text):
             return {"name": "Virtual", "address": ""}, description
         location = self._parse_address(raw)
-        if location is None and details and not hybrid:
-            # Only call-in details, no place: the 2021-2023 teleconference
-            # meetings, whose agendas also list only online and phone access
+        if location is None and (details or notes) and not hybrid:
+            # Only call-in, Zoom or link details, no place: the 2021-2023
+            # teleconference meetings, whose agendas also list only online and
+            # phone access. A hybrid meeting without an address stays TBD.
             return {"name": "Virtual", "address": ""}, description
         if location is None:
             if text:
